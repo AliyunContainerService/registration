@@ -1,0 +1,16 @@
+FROM registry.ci.openshift.org/open-cluster-management/builder:go1.16-linux AS builder
+WORKDIR /go/src/open-cluster-management.io/registration
+COPY . .
+ENV GO_PACKAGE open-cluster-management.io/registration
+
+RUN make build --warn-undefined-variables
+RUN make build-e2e --warn-undefined-variables
+
+FROM registry.cn-hangzhou.aliyuncs.com/acs/centos:7-base
+ENV USER_UID=99
+
+COPY --from=builder /go/src/open-cluster-management.io/registration/registration /
+COPY --from=builder /go/src/open-cluster-management.io/registration/e2e.test /
+RUN microdnf update && microdnf clean all
+
+USER ${USER_UID}
