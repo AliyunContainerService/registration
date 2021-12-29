@@ -11,6 +11,5 @@ ENV USER_UID=99
 
 COPY --from=builder /go/src/open-cluster-management.io/registration/registration /
 COPY --from=builder /go/src/open-cluster-management.io/registration/e2e.test /
-RUN microdnf update && microdnf clean all
 
 USER ${USER_UID}
