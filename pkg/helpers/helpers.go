@@ -217,95 +217,6 @@ func CleanUpManagedClusterManifests(
 	return errorhelpers.NewMultiLineAggregate(errs)
 }
 
-// CleanUpGroupFromClusterRoleBindings search all clusterrolebindings for managed cluster group and remove the subject entry
-// or delete the clusterrolebinding if it's the only subject.
-func CleanUpGroupFromClusterRoleBindings(
-	ctx context.Context,
-	client kubernetes.Interface,
-	recorder events.Recorder,
-	managedClusterGroup string) error {
-	clusterRoleBindings, err := client.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range clusterRoleBindings.Items {
-		clusterRoleBinding := clusterRoleBindings.Items[i]
-		subjects := clusterRoleBinding.Subjects
-		newSubjects := []rbacv1.Subject{}
-		for _, subject := range subjects {
-			if subject.Kind == "Group" && subject.Name == managedClusterGroup {
-				continue
-			}
-			newSubjects = append(newSubjects, subject)
-		}
-		// no other subjects, remove this clusterrolebinding
-		if len(newSubjects) == 0 {
-			err := client.RbacV1().ClusterRoleBindings().Delete(ctx, clusterRoleBinding.Name, metav1.DeleteOptions{})
-			if err != nil {
-				return err
-			}
-			recorder.Eventf("ClusterRoleBindingDeleted", fmt.Sprintf("Deleted ClusterRoleBinding %q", clusterRoleBinding.Name))
-			continue
-		}
-		// there are other subjects, only remove the cluster managed group
-		if len(newSubjects) != len(subjects) {
-			clusterRoleBinding.Subjects = newSubjects
-			_, err := client.RbacV1().ClusterRoleBindings().Update(ctx, &clusterRoleBinding, metav1.UpdateOptions{})
-			if err != nil {
-				return err
-			}
-			recorder.Eventf("ClusterRoleBindingUpdated", fmt.Sprintf("Updated ClusterRoleBinding %q", clusterRoleBinding.Name))
-			continue
-		}
-	}
-
-	return nil
-}
-
-// CleanUpGroupFromRoleBindings search all rolebindings for managed cluster group and remove the subject entry
-// or delete the rolebinding if it's the only subject.
-func CleanUpGroupFromRoleBindings(
-	ctx context.Context,
-	client kubernetes.Interface,
-	recorder events.Recorder,
-	managedClusterGroup string) error {
-	roleBindings, err := client.RbacV1().RoleBindings(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range roleBindings.Items {
-		roleBinding := roleBindings.Items[i]
-		subjects := roleBinding.Subjects
-		newSubjects := []rbacv1.Subject{}
-		for _, subject := range subjects {
-			if subject.Kind == "Group" && subject.Name == managedClusterGroup {
-				continue
-			}
-			newSubjects = append(newSubjects, subject)
-		}
-		// no other subjects, remove this rolebinding
-		if len(newSubjects) == 0 {
-			err := client.RbacV1().RoleBindings(roleBinding.Namespace).Delete(ctx, roleBinding.Name, metav1.DeleteOptions{})
-			if err != nil {
-				return err
-			}
-			recorder.Eventf("RoleBindingDeleted", fmt.Sprintf("Deleted RoleBinding %q/%q", roleBinding.Namespace, roleBinding.Name))
-			continue
-		}
-		// there are other subjects, only remove the cluster managed group
-		if len(newSubjects) != len(subjects) {
-			roleBinding.Subjects = newSubjects
-			_, err := client.RbacV1().RoleBindings(roleBinding.Namespace).Update(ctx, &roleBinding, metav1.UpdateOptions{})
-			if err != nil {
-				return err
-			}
-			recorder.Eventf("RoleBindingUpdated", fmt.Sprintf("Updated RoleBinding %q/%q", roleBinding.Namespace, roleBinding.Name))
-			continue
-		}
-	}
-	return nil
-}
-
 func ManagedClusterAssetFn(fs embed.FS, managedClusterName string) resourceapply.AssetFunc {
 	return func(name string) ([]byte, error) {
 		config := struct {
@@ -320,4 +231,62 @@ func ManagedClusterAssetFn(fs embed.FS, managedClusterName string) resourceapply
 		}
 		return assets.MustCreateAssetFromTemplate(name, template, config).Data, nil
 	}
+}
+
+// FindTaintByKey returns a taint if the managed cluster has a taint with the given key.
+func FindTaintByKey(managedCluster *clusterv1.ManagedCluster, key string) *clusterv1.Taint {
+	if managedCluster == nil {
+		return nil
+	}
+	for _, taint := range managedCluster.Spec.Taints {
+		if key != taint.Key {
+			continue
+		}
+		return &taint
+	}
+	return nil
+}
+
+func IsTaintEqual(taint1, taint2 clusterv1.Taint) bool {
+	// Ignore the comparison of time
+	return taint1.Key == taint2.Key && taint1.Value == taint2.Value && taint1.Effect == taint2.Effect
+}
+
+// AddTaints add taints to the specified slice, if it did not already exist.
+// Return a boolean indicating whether the slice has been updated.
+func AddTaints(taints *[]clusterv1.Taint, taint clusterv1.Taint) bool {
+	if taints == nil || *taints == nil {
+		*taints = make([]clusterv1.Taint, 0)
+	}
+	if FindTaint(*taints, taint) != nil {
+		return false
+	}
+	*taints = append(*taints, taint)
+	return true
+}
+
+func RemoveTaints(taints *[]clusterv1.Taint, targets ...clusterv1.Taint) (updated bool) {
+	if taints == nil || len(*taints) == 0 || len(targets) == 0 {
+		return false
+	}
+
+	newTaints := make([]clusterv1.Taint, 0)
+	for _, v := range *taints {
+		if FindTaint(targets, v) == nil {
+			newTaints = append(newTaints, v)
+		}
+	}
+	updated = len(*taints) != len(newTaints)
+	*taints = newTaints
+	return updated
+}
+
+func FindTaint(taints []clusterv1.Taint, taint clusterv1.Taint) *clusterv1.Taint {
+	for i := range taints {
+		if IsTaintEqual(taints[i], taint) {
+			return &taints[i]
+		}
+	}
+
+	return nil
 }

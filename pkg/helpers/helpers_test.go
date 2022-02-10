@@ -26,8 +26,6 @@ import (
 	clienttesting "k8s.io/client-go/testing"
 )
 
-const testManagedClusterGroup = "system:open-cluster-management:testgroup"
-
 func TestUpdateStatusCondition(t *testing.T) {
 	nowish := metav1.Now()
 	beforeish := metav1.Time{Time: nowish.Add(-10 * time.Second)}
@@ -324,129 +322,56 @@ func TestCleanUpManagedClusterManifests(t *testing.T) {
 	}
 }
 
-func TestCleanUpGroupFromClusterRoleBindings(t *testing.T) {
+func TestFindTaintByKey(t *testing.T) {
 	cases := []struct {
-		name            string
-		object          []runtime.Object
-		validateActions func(t *testing.T, actions []clienttesting.Action)
+		name     string
+		cluster  *clusterv1.ManagedCluster
+		key      string
+		expected *clusterv1.Taint
 	}{
 		{
-			name: "clean up group from clusterrolebindings",
-			object: []runtime.Object{
-				&rbacv1.ClusterRoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: "crb1"},
-					Subjects: []rbacv1.Subject{
-						{Kind: "Group", Name: testManagedClusterGroup},
-					},
-				},
-				&rbacv1.ClusterRoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: "crb2"},
-					Subjects: []rbacv1.Subject{
-						{Kind: "Group", Name: testManagedClusterGroup},
-						{Kind: "Group", Name: "test"},
-						{Kind: "User", Name: testManagedClusterGroup},
-					},
-				},
-				&rbacv1.ClusterRoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: "crb3"},
-					Subjects: []rbacv1.Subject{
-						{Kind: "Group", Name: "test"},
+			name: "nil of managed cluster",
+			key:  "taint1",
+		},
+		{
+			name: "taint found",
+			cluster: &clusterv1.ManagedCluster{
+				Spec: clusterv1.ManagedClusterSpec{
+					Taints: []clusterv1.Taint{
+						{
+							Key:   "taint1",
+							Value: "value1",
+						},
 					},
 				},
 			},
-			validateActions: func(t *testing.T, actions []clienttesting.Action) {
-				if len(actions) != 3 {
-					t.Errorf("expected 3 actions, but %v", actions)
-				}
-				if actions[1].(clienttesting.DeleteActionImpl).Name != "crb1" {
-					t.Errorf("expected to delete crb1, but %v", actions[1])
-				}
-				actual := (actions[2].(clienttesting.UpdateActionImpl).Object).(*rbacv1.ClusterRoleBinding)
-				expected := []rbacv1.Subject{{Kind: "Group", Name: "test"}, {Kind: "User", Name: testManagedClusterGroup}}
-				if !reflect.DeepEqual(actual.Subjects, expected) {
-					t.Errorf("expected %v, but %v", expected, actual.Subjects)
-				}
+			key: "taint1",
+			expected: &clusterv1.Taint{
+				Key:   "taint1",
+				Value: "value1",
 			},
+		},
+		{
+			name: "taint not found",
+			cluster: &clusterv1.ManagedCluster{
+				Spec: clusterv1.ManagedClusterSpec{
+					Taints: []clusterv1.Taint{
+						{
+							Key:   "taint1",
+							Value: "value1",
+						},
+					},
+				},
+			},
+			key: "taint2",
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			kubeClient := fakekube.NewSimpleClientset(c.object...)
-			err := CleanUpGroupFromClusterRoleBindings(
-				context.TODO(),
-				kubeClient,
-				eventstesting.NewTestingEventRecorder(t),
-				testManagedClusterGroup,
-			)
-			if err != nil {
-				t.Errorf("unexpected err: %v", err)
-				return
+			actual := FindTaintByKey(c.cluster, c.key)
+			if !reflect.DeepEqual(actual, c.expected) {
+				t.Errorf("expected %v but got %v", c.expected, actual)
 			}
-			c.validateActions(t, kubeClient.Actions())
-		})
-	}
-}
-
-func TestCleanUpGroupFromRoleBindings(t *testing.T) {
-	cases := []struct {
-		name            string
-		object          []runtime.Object
-		validateActions func(t *testing.T, actions []clienttesting.Action)
-	}{
-		{
-			name: "clean up group from rolebindings",
-			object: []runtime.Object{
-				&rbacv1.RoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: "rb1", Namespace: "n1"},
-					Subjects: []rbacv1.Subject{
-						{Kind: "Group", Name: testManagedClusterGroup},
-					},
-				},
-				&rbacv1.RoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: "rb2", Namespace: "n1"},
-					Subjects: []rbacv1.Subject{
-						{Kind: "Group", Name: testManagedClusterGroup},
-						{Kind: "Group", Name: "test"},
-						{Kind: "User", Name: testManagedClusterGroup},
-					},
-				},
-				&rbacv1.RoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: "rb3", Namespace: "n2"},
-					Subjects: []rbacv1.Subject{
-						{Kind: "Group", Name: "test"},
-					},
-				},
-			},
-			validateActions: func(t *testing.T, actions []clienttesting.Action) {
-				if len(actions) != 3 {
-					t.Errorf("expected 3 actions, but %v", actions)
-				}
-				if actions[1].(clienttesting.DeleteActionImpl).Name != "rb1" ||
-					actions[1].(clienttesting.DeleteActionImpl).Namespace != "n1" {
-					t.Errorf("expected to delete crb1, but %v", actions[1])
-				}
-				actual := (actions[2].(clienttesting.UpdateActionImpl).Object).(*rbacv1.RoleBinding)
-				expected := []rbacv1.Subject{{Kind: "Group", Name: "test"}, {Kind: "User", Name: testManagedClusterGroup}}
-				if !reflect.DeepEqual(actual.Subjects, expected) {
-					t.Errorf("expected %v, but %v", expected, actual.Subjects)
-				}
-			},
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			kubeClient := fakekube.NewSimpleClientset(c.object...)
-			err := CleanUpGroupFromRoleBindings(
-				context.TODO(),
-				kubeClient,
-				eventstesting.NewTestingEventRecorder(t),
-				testManagedClusterGroup,
-			)
-			if err != nil {
-				t.Errorf("unexpected err: %v", err)
-				return
-			}
-			c.validateActions(t, kubeClient.Actions())
 		})
 	}
 }
@@ -457,4 +382,147 @@ func getApplyFileNames(applyFiles map[string]runtime.Object) []string {
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+var (
+	UnavailableTaint = clusterv1.Taint{
+		Key:    clusterv1.ManagedClusterTaintUnavailable,
+		Effect: clusterv1.TaintEffectNoSelect,
+	}
+
+	UnreachableTaint = clusterv1.Taint{
+		Key:    clusterv1.ManagedClusterTaintUnreachable,
+		Effect: clusterv1.TaintEffectNoSelect,
+	}
+)
+
+func TestIsTaintsEqual(t *testing.T) {
+	cases := []struct {
+		name    string
+		taints1 []clusterv1.Taint
+		taints2 []clusterv1.Taint
+		expect  bool
+	}{
+		{
+			name:    "two empty taints",
+			taints1: []clusterv1.Taint{},
+			taints2: []clusterv1.Taint{},
+			expect:  true,
+		},
+		{
+			name:    "two nil taints",
+			taints1: nil,
+			taints2: nil,
+			expect:  true,
+		},
+		{
+			name:    "len(taints1) = 1, len(taints2) = 0",
+			taints1: []clusterv1.Taint{UnavailableTaint},
+			taints2: []clusterv1.Taint{},
+			expect:  false,
+		},
+		{
+			name:    "taints1 is the same as taints",
+			taints1: []clusterv1.Taint{UnreachableTaint},
+			taints2: []clusterv1.Taint{UnreachableTaint},
+			expect:  true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			actual := reflect.DeepEqual(c.taints1, c.taints2)
+			if actual != c.expect {
+				t.Errorf("expected %t, but %t", c.expect, actual)
+			}
+		})
+	}
+}
+
+func TestAddTaints(t *testing.T) {
+	cases := []struct {
+		name          string
+		taints        []clusterv1.Taint
+		addTaint      clusterv1.Taint
+		resTaints     []clusterv1.Taint
+		expectUpdated bool
+	}{
+		{
+			name:          "add taint success",
+			taints:        []clusterv1.Taint{},
+			addTaint:      UnreachableTaint,
+			expectUpdated: true,
+			resTaints:     []clusterv1.Taint{UnreachableTaint},
+		},
+		{
+			name:          "add taint fail, taint already exists",
+			taints:        []clusterv1.Taint{UnreachableTaint},
+			addTaint:      UnreachableTaint,
+			expectUpdated: false,
+			resTaints:     []clusterv1.Taint{UnreachableTaint},
+		},
+		{
+			name:          "nil pointer judgment",
+			taints:        nil,
+			addTaint:      UnreachableTaint,
+			expectUpdated: true,
+			resTaints:     []clusterv1.Taint{UnreachableTaint},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			updated := AddTaints(&c.taints, c.addTaint)
+			if updated != c.expectUpdated {
+				t.Errorf("updated expected %t, but %t", c.expectUpdated, updated)
+			}
+			if !reflect.DeepEqual(c.taints, c.resTaints) {
+				t.Errorf("taints expected %+v, but %+v", c.taints, c.resTaints)
+			}
+		})
+	}
+}
+
+func TestRemoveTaints(t *testing.T) {
+	cases := []struct {
+		name          string
+		taints        []clusterv1.Taint
+		removeTaint   clusterv1.Taint
+		resTaints     []clusterv1.Taint
+		expectUpdated bool
+	}{
+		{
+			name:          "nil pointer judgment",
+			taints:        nil,
+			removeTaint:   UnreachableTaint,
+			expectUpdated: false,
+			resTaints:     nil,
+		},
+		{
+			name:          "remove success",
+			taints:        []clusterv1.Taint{UnreachableTaint},
+			removeTaint:   UnreachableTaint,
+			expectUpdated: true,
+			resTaints:     []clusterv1.Taint{},
+		},
+		{
+			name:          "remove taint failed, taint not exists",
+			taints:        []clusterv1.Taint{UnreachableTaint},
+			removeTaint:   UnavailableTaint,
+			expectUpdated: false,
+			resTaints:     []clusterv1.Taint{UnreachableTaint},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			updated := RemoveTaints(&c.taints, c.removeTaint)
+			if updated != c.expectUpdated {
+				t.Errorf("updated expected %t, but %t", c.expectUpdated, updated)
+			}
+			if !reflect.DeepEqual(c.taints, c.resTaints) {
+				t.Errorf("taints expected %+v, but %+v", c.taints, c.resTaints)
+			}
+		})
+	}
 }

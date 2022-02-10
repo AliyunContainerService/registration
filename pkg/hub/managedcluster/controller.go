@@ -44,6 +44,7 @@ type managedClusterController struct {
 	kubeClient    kubernetes.Interface
 	clusterClient clientset.Interface
 	clusterLister listerv1.ManagedClusterLister
+	cache         resourceapply.ResourceCache
 	eventRecorder events.Recorder
 }
 
@@ -57,6 +58,7 @@ func NewManagedClusterController(
 		kubeClient:    kubeClient,
 		clusterClient: clusterClient,
 		clusterLister: clusterInformer.Lister(),
+		cache:         resourceapply.NewResourceCache(),
 		eventRecorder: recorder.WithComponentSuffix("managed-cluster-controller"),
 	}
 	return factory.New().
@@ -142,8 +144,10 @@ func (c *managedClusterController) sync(ctx context.Context, syncCtx factory.Syn
 	// 2. namespace for this spoke cluster.
 	// 3. role and rolebinding for this spoke cluster on its namespace.
 	resourceResults := resourceapply.ApplyDirectly(
+		ctx,
 		resourceapply.NewKubeClientHolder(c.kubeClient),
 		syncCtx.Recorder(),
+		c.cache,
 		helpers.ManagedClusterAssetFn(manifestFiles, managedClusterName),
 		applyFiles...,
 	)
@@ -188,14 +192,6 @@ func (c *managedClusterController) removeManagedClusterResources(ctx context.Con
 	// Clean up managed cluster manifests
 	assetFn := helpers.ManagedClusterAssetFn(manifestFiles, managedClusterName)
 	if err := helpers.CleanUpManagedClusterManifests(ctx, c.kubeClient, c.eventRecorder, assetFn, staticFiles...); err != nil {
-		errs = append(errs, err)
-	}
-	// Clean up managed cluster group from clusterrolebindings and rolebindings.
-	managedClusterGroup := fmt.Sprintf("system:open-cluster-management:%s", managedClusterName)
-	if err := helpers.CleanUpGroupFromClusterRoleBindings(ctx, c.kubeClient, c.eventRecorder, managedClusterGroup); err != nil {
-		errs = append(errs, err)
-	}
-	if err := helpers.CleanUpGroupFromRoleBindings(ctx, c.kubeClient, c.eventRecorder, managedClusterGroup); err != nil {
 		errs = append(errs, err)
 	}
 	return operatorhelpers.NewMultiLineAggregate(errs)
